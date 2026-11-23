@@ -20,6 +20,7 @@
     - Settings->rf_code[16][6]    : Minimum production power level to activate local relay (x50 W)
     - Settings->rf_code[16][7]    : LED brightness
     - Settings->rf_code[16][8]    : Number of samples to average cosphi
+    - Settings->rf_code[14][8]    : Minimum delay (s) of Wh increment chrono active power measure (0 = disabled)
 
   RAM : esp8266 ~ 5600 bytes
         esp32   ~ 20000 bytes
@@ -147,8 +148,8 @@ const char PSTR_DRIVER_DATA_FILE[]  PROGMEM = "/teleinfo-contract.dat";
 #define TIC_BRIGHT_DEFAULT          50        // default LED brightness
 
 // EnergyConfig commands
-const char kTeleinfoEnergyCommands[] PROGMEM =    "historique"   "|"   "standard"   "|"   "speed"   "|"   "detect"   "|"   "noraw"   "|"   "full"   "|"   "period"   "|"   "live"   "|"   "skip"   "|"   "bright"   "|"   "percent"   "|"   "stats"   "|"   "error"   "|"   "reset"   "|"    "calraz"   "|"   "calhexa"   "|"   "prod"   "|"   "trigger"   "|"    "display"   "|"    "cosphi"   "|" CMND_TIC_POLICY "|" CMND_TIC_METER "|" CMND_TIC_CALENDAR "|" CMND_TIC_RELAY;
-enum TeleinfoEnergyCommand                   { TIC_CMND_HISTORIQUE, TIC_CMND_STANDARD, TIC_CMND_SPEED, TIC_CMND_DETECT, TIC_CMND_NORAW, TIC_CMND_FULL, TIC_CMND_PERIOD, TIC_CMND_LIVE, TIC_CMND_SKIP, TIC_CMND_BRIGHT, TIC_CMND_PERCENT, TIC_CMND_STATS, TIC_CMND_ERROR, TIC_CMND_RESET,  TIC_CMND_CALRAZ, TIC_CMND_CALHEXA, TIC_CMND_PROD, TIC_CMND_TRIGGER,  TIC_CMND_DISPLAY,  TIC_CMND_COSPHI,  TIC_CMND_POLICY  ,  TIC_CMND_METER  ,  TIC_CMND_CALENDAR  ,  TIC_CMND_RELAY};
+const char kTeleinfoEnergyCommands[] PROGMEM =    "historique"   "|"   "standard"   "|"   "speed"   "|"   "detect"   "|"   "noraw"   "|"   "full"   "|"   "period"   "|"   "live"   "|"   "skip"   "|"   "bright"   "|"   "percent"   "|"   "stats"   "|"   "error"   "|"   "reset"   "|"    "calraz"   "|"   "calhexa"   "|"   "prod"   "|"   "trigger"   "|"    "display"   "|"    "cosphi"   "|"   "chrono"   "|" CMND_TIC_POLICY "|" CMND_TIC_METER "|" CMND_TIC_CALENDAR "|" CMND_TIC_RELAY;
+enum TeleinfoEnergyCommand                   { TIC_CMND_HISTORIQUE, TIC_CMND_STANDARD, TIC_CMND_SPEED, TIC_CMND_DETECT, TIC_CMND_NORAW, TIC_CMND_FULL, TIC_CMND_PERIOD, TIC_CMND_LIVE, TIC_CMND_SKIP, TIC_CMND_BRIGHT, TIC_CMND_PERCENT, TIC_CMND_STATS, TIC_CMND_ERROR, TIC_CMND_RESET,  TIC_CMND_CALRAZ, TIC_CMND_CALHEXA, TIC_CMND_PROD, TIC_CMND_TRIGGER,  TIC_CMND_DISPLAY,  TIC_CMND_COSPHI, TIC_CMND_CHRONO, TIC_CMND_POLICY  ,  TIC_CMND_METER  ,  TIC_CMND_CALENDAR  ,  TIC_CMND_RELAY};
 
 // Data publication commands
 static const char kTeleinfoDriverCommands[]  PROGMEM =          "|tic";
@@ -444,6 +445,7 @@ struct {                   // 38 bytes
   uint8_t  skip          = 2;                           // number of frames to skip while publishing TIC or LIVE
   uint8_t  brightness    = 0;
   uint8_t  cosphi_sample = TIC_COSPHI_SAMPLE_MAX;       // number of samples to average cosphi
+  uint8_t  chrono        = 0;                           // minimum delay (s) of Wh increment chrono measure (0 = disabled)
   uint16_t baudrate      = 0;
   long     prod_max      = 0;                           // maximum power produced
   long     prod_trigger  = 0;                           // average production power to trigger production relay
@@ -645,6 +647,18 @@ struct {
   long long total;                               // global active conso total (Wh)
   long long index[TIC_PERIOD_MAX];               // array of conso total of different tarif periods (Wh)
 } teleinfo_conso_wh;
+
+// teleinfo : conso active power measured by chrono between Wh increments
+// -----------------------------------------------------------------------
+
+struct {
+  uint32_t  stamp    = UINT32_MAX;               // timestamp of measure window start (ms, UINT32_MAX if not started)
+  long long start    = 0;                        // global conso total at window start (Wh)
+  long long last     = 0;                        // last global conso total seen (Wh)
+  long      pact     = LONG_MAX;                 // last measured active power (W, LONG_MAX if none)
+  long      delta_wh = 0;                        // energy of last measure window (Wh)
+  long      delay_ms = 0;                        // duration of last measure window (ms)
+} teleinfo_chrono;
 
 // teleinfo : production mode
 // --------------------------

@@ -176,6 +176,7 @@ bool TeleinfoEnergyHandleCommand ()
       AddLog (LOG_LEVEL_INFO, PSTR ("  error=%u        affichage compteurs d'erreurs [0/1]"), teleinfo_config.error);
       AddLog (LOG_LEVEL_INFO, PSTR ("  percent=%u    pourcentage acceptable du contrat (%%)"), teleinfo_config.percent);
       AddLog (LOG_LEVEL_INFO, PSTR ("  cosphi=%u      nombre de mesures pour moyennage cosphi (%u..%u)"), teleinfo_config.cosphi_sample, TIC_COSPHI_SAMPLE_MIN, TIC_COSPHI_SAMPLE_MAX);
+      AddLog (LOG_LEVEL_INFO, PSTR ("  chrono=%u      délai min. (s) mesure P entre incréments Wh, topic PACT (0:désactivé, 1..255)"), teleinfo_config.chrono);
 
       AddLog (LOG_LEVEL_INFO, PSTR ("Production :"));
       AddLog (LOG_LEVEL_INFO, PSTR ("  prod=%d        puissance maximum (W)"), teleinfo_config.prod_max);
@@ -413,6 +414,16 @@ bool TeleinfoEnergyExecuteCommand (const int command, const long value)
       to_save = ((value >= TIC_COSPHI_SAMPLE_MIN) && (value <= TIC_COSPHI_SAMPLE_MAX) && (teleinfo_config.cosphi_sample != (uint8_t)value));
       if (to_save) teleinfo_config.cosphi_sample = (uint8_t)value;
       AddLog (LOG_LEVEL_INFO, PSTR ("TIC: cosphi=%u"), teleinfo_config.cosphi_sample);
+      break;
+
+    case TIC_CMND_CHRONO:
+      to_save = ((value >= 0) && (value <= UINT8_MAX) && (teleinfo_config.chrono != (uint8_t)value));
+      if (to_save)
+      {
+        teleinfo_config.chrono = (uint8_t)value;
+        teleinfo_chrono.stamp  = UINT32_MAX;
+      }
+      AddLog (LOG_LEVEL_INFO, PSTR ("TIC: chrono=%u"), teleinfo_config.chrono);
       break;
     }
 
@@ -1957,6 +1968,80 @@ void TeleinfoConsoCalculateActivePower_VA_Wh ()
   }
 }
 
+// Conso : active power measured by chrono between Wh increments
+//   Chrono starts on a Wh increment of global counter. On next increment, if chrono >= minimum delay,
+//   P = delta Wh * 3600 / delta t is calculated and published immediately on PACT topic, then chrono restarts.
+//   Both window edges are detected with the same frame resolution, so timing error is about 1 frame / window.
+void TeleinfoConsoChronoPublish ()
+{
+  // generate JSON
+  ResponseClear ();
+  if (RtcTime.valid) { ResponseAppendTime (); ResponseAppend_P (PSTR (",")); }
+    else ResponseAppend_P (PSTR ("{"));
+  ResponseAppend_P (PSTR ("\"PACT\":{\"W\":%d,\"WH\":%d,\"DT\":%d.%01d}"), teleinfo_chrono.pact, teleinfo_chrono.delta_wh, teleinfo_chrono.delay_ms / 1000, teleinfo_chrono.delay_ms % 1000 / 100);
+  ResponseJsonEnd ();
+
+  // immediate publication (with rules processing)
+  MqttPublishPrefixTopicRulesProcess_P (TELE, PSTR ("PACT"), false);
+  HelperPublishDeclareMqtt ();
+}
+
+void TeleinfoConsoChronoUpdate (const uint32_t timestamp)
+{
+  long long total;
+  long      delay;
+
+  // if disabled, reset chrono
+  if (teleinfo_config.chrono == 0)
+  {
+    teleinfo_chrono.stamp = UINT32_MAX;
+    teleinfo_chrono.last  = 0;
+    return;
+  }
+
+  // if global counter not defined, ignore
+  total = teleinfo_conso_wh.total;
+  if (total == 0) return;
+
+  // first value or counter decrease : wait for next increment to start chrono
+  if ((teleinfo_chrono.last == 0) || (total < teleinfo_chrono.last))
+  {
+    teleinfo_chrono.last  = total;
+    teleinfo_chrono.stamp = UINT32_MAX;
+    return;
+  }
+
+  // if no increment, nothing to do
+  if (total == teleinfo_chrono.last) return;
+  teleinfo_chrono.last = total;
+
+  // if chrono not started, start it on this increment
+  if (teleinfo_chrono.stamp == UINT32_MAX)
+  {
+    teleinfo_chrono.stamp = timestamp;
+    teleinfo_chrono.start = total;
+    return;
+  }
+
+  // if minimum delay not reached, wait for next increment
+  delay = (long)TimeDifference (teleinfo_chrono.stamp, timestamp);
+  if (delay < 1000L * (long)teleinfo_config.chrono) return;
+
+  // calculate average active power on the window
+  teleinfo_chrono.delta_wh = (long)(total - teleinfo_chrono.start);
+  teleinfo_chrono.delay_ms = delay;
+  teleinfo_chrono.pact     = (long)((long long)teleinfo_chrono.delta_wh * 3600000LL / delay);
+
+  // restart chrono on this increment
+  teleinfo_chrono.stamp = timestamp;
+  teleinfo_chrono.start = total;
+
+  AddLog (LOG_LEVEL_DEBUG, PSTR ("TIC: [chrono] %d Wh in %d ms -> %d W"), teleinfo_chrono.delta_wh, delay, teleinfo_chrono.pact);
+
+  // publish immediately
+  if (TeleinfoDriverMeterReady ()) TeleinfoConsoChronoPublish ();
+}
+
 // Conso : PME/PMI meters
 //   Calcultate Cosphi, Apparent Power (VA) and Active Power (W) from Apparent Power (VAh) and Active Power (Wh) increments
 void TeleinfoConsoCalculateApparentandActivePower_VAh_Wh ()
@@ -2368,6 +2453,9 @@ void TeleinfoReceptionMessageStop ()
 
   // update total conso energy counter
   TeleinfoEnergyConsoGlobalCounterUpdate ();
+
+  // active power measure by chrono between Wh increments (timestamp of frame end)
+  TeleinfoConsoChronoUpdate (timestamp);
 
   // -------------------------------------
   //     calculate conso active power 

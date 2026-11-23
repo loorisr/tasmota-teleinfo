@@ -287,6 +287,7 @@ void TeleinfoDriverLoadSettings ()
   teleinfo_config.brightness    = min (Settings->rf_code[16][7], (uint8_t)100);
   teleinfo_config.cosphi_sample = min (Settings->rf_code[16][8], (uint8_t)TIC_COSPHI_SAMPLE_MAX);
   teleinfo_config.baudrate      = (uint32_t)Settings->rf_code[15][8] * 300;
+  teleinfo_config.chrono        = Settings->rf_code[14][8];
 
   // load display flags
   for (index = 0; index < 9; index ++) teleinfo_config.arr_main[index] = !(bool)Settings->rf_code[10][index];
@@ -322,6 +323,7 @@ void TeleinfoDriverSaveSettings ()
   Settings->rf_code[16][6]         = (uint8_t)(teleinfo_config.prod_trigger / 50);
   Settings->rf_code[16][7]         = teleinfo_config.brightness;
   Settings->rf_code[16][8]         = teleinfo_config.cosphi_sample;
+  Settings->rf_code[14][8]         = teleinfo_config.chrono;
   Settings->energy_max_power_limit = (uint16_t)teleinfo_config.prod_max;
 
   // save display flags
@@ -2280,6 +2282,10 @@ void TeleinfoDriverWebSensor ()
       value = 0; 
       for (phase = 0; phase < teleinfo_contract.phase; phase++) value += teleinfo_conso.phase[phase].pact;
       WSContentSend_P (PSTR ("<div class='tic'><div class='tic16'></div><div class='tic37l'>cosφ <b>%d,%02d</b></div><div class='tic35r'>%d</div><div class='tic02'></div><div class='tic10l'>W</div></div>\n"), teleinfo_conso.cosphi.value / 1000, teleinfo_conso.cosphi.value % 1000 / 10, value);
+
+      // active power measured by chrono between Wh increments
+      if ((teleinfo_config.chrono > 0) && (teleinfo_chrono.pact != LONG_MAX))
+        WSContentSend_P (PSTR ("<div class='tic'><div class='tic16'></div><div class='tic37l'>chrono <b>%d,%01ds</b></div><div class='tic35r'>%d</div><div class='tic02'></div><div class='tic10l'>W</div></div>\n"), teleinfo_chrono.delay_ms / 1000, teleinfo_chrono.delay_ms % 1000 / 100, teleinfo_chrono.pact);
 
       // today's and yesterday's total
       if (teleinfo_conso_wh.yesterday > 0) WSContentSend_P (PSTR ("<div class='tic'><div class='tic16'></div><div class='tic37l'>%s</div><div class='tic35r'>%d,%03d</div><div class='tic02'></div><div class='tic10l'>kWh</div></div>\n"), PSTR ("Hier"),        teleinfo_conso_wh.yesterday / 1000, abs (teleinfo_conso_wh.yesterday % 1000));
